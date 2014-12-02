@@ -1,97 +1,134 @@
 <?php
 /**
- * Version Truncator for SilverStripe
- * ==================================
- *
- * A SilerStripe extension to automatically delete old published & draft
- * versions from all classes extending the SiteTree (like Page) upon save.
- *
- * Please refer to the README.md for confirguration options.
- *
- * License: MIT-style license http://opensource.org/licenses/MIT
- * Authors: Techno Joy development team (www.technojoy.co.nz)
- */
+* Version Truncator for SilverStripe
+* ==================================
+*
+* A SilerStripe extension to automatically delete old published & draft
+* page versions from all classes extending the SiteTree upon save.
+*
+* Please refer to the README.md for confirguration options.
+*
+* License: MIT-style license http://opensource.org/licenses/MIT
+* Authors: Techno Joy development team (www.technojoy.co.nz)
+*/
 
-class VersionTruncator extends SiteTreeExtension {
+class VersionTruncator {
 
 	private static $version_limit = 10;
 
 	private static $draft_limit = 5;
 
+	// Preserve old versions if they have an different URLSegment / ParentID
+	private static $preserve_redirects = false;
+
+	// VACUUM tables/database after deletions
 	private static $vacuum_tables = false;
 
-	private static $delete_old_page_types = false;
+	/**
+	* Truncate versions
+	*/
+	public static function TruncateVersions($RecordID, $version_limit = false, $draft_limit = false) {
 
-	/*
-	 * Automatically invoked with any save() on a SiteTree object
-	 * @param null
-	 * @return null
-	 */
-	public function onAfterWrite() {
+		if ($version_limit === false) {
+			$version_limit = Config::inst()->get('VersionTruncator', 'version_limit');
+		}
 
-		parent::onAfterWrite();
+		if ($draft_limit === false) {
+			$draft_limit = Config::inst()->get('VersionTruncator', 'draft_limit');
+		}
 
-		$ID = $this->owner->ID;
-		$className = $this->owner->ClassName;
-		$subClasses = ClassInfo::dataClassesFor($className);
+		$preserve_redirects = Config::inst()->get('VersionTruncator', 'preserve_redirects');
+
+		$sqlQuery = new SQLQuery();
+		$sqlQuery->setFrom('SiteTree_versions');
+		$sqlQuery->addWhere('RecordID = ' . $RecordID);
+		$sqlQuery->setOrderBy('LastEdited DESC');
+
+		$result = $sqlQuery->execute();
+
+		$publishedCount = 0;
+
+		$draftCount = 0;
+
+		$seen_url_segments = array();
+
 		$versionsToDelete = array();
 
-		$version_limit = Config::inst()->get('VersionTruncator', 'version_limit');
+		foreach ($result as $row) {
+			$ID = $row['ID'];
+			$RecordID = $row['RecordID'];
+			$ClassName = $row['ClassName'];
+			$Version = $row['Version'];
+			$WasPublished = $row['WasPublished'];
+			$URLSegment = $row['ParentID'] . $row['URLSegment'];
 
-		if (is_numeric($version_limit)) {
-			$search = DB::query('SELECT "RecordID", "Version" FROM "SiteTree_versions"
-				 WHERE "RecordID" = ' . $ID  . ' AND "ClassName" = \'' . $className . '\'
-				 AND "PublisherID" > 0
-				 ORDER BY "LastEdited" DESC LIMIT ' . $version_limit .', 200');
-			foreach ($search as $row)
-				array_push($versionsToDelete, array('RecordID' => $row['RecordID'], 'Version' => $row['Version']));
-		}
+			/* Drafts */
+			if (!$WasPublished) {
+				$draftCount++;
+				if ($draftCount > $draft_limit) {
+					array_push($versionsToDelete, array(
+						'RecordID' => $RecordID,
+						'Version' => $Version,
+						'ClassName' => $ClassName
+					));
+				}
+			}
+			/* Published */
+			else {
+				$publishedCount++;
+				if ($publishedCount > $version_limit ) {
+					if (!$preserve_redirects || in_array($URLSegment, $seen_url_segments)) {
+						array_push($versionsToDelete, array(
+							'RecordID' => $RecordID,
+							'Version' => $Version,
+							'ClassName' => $ClassName
+						));
+					}
+				}
+				/* add page to "seen URLs" if $preserve_redirects */
+				if($preserve_redirects && !in_array($URLSegment, $seen_url_segments)) {
+					array_push($seen_url_segments, $URLSegment);
+				}
+			}
 
-		$draft_limit = Config::inst()->get('VersionTruncator', 'draft_limit');
-
-		if (is_numeric($draft_limit)) {
-			$search = DB::query('SELECT "RecordID", "Version" FROM "SiteTree_versions"
-				 WHERE "RecordID" = ' . $ID  . ' AND "ClassName" = \'' . $className . '\'
-				 AND "PublisherID" = 0
-				 ORDER BY "LastEdited" DESC LIMIT ' . $draft_limit .', 200');
-			foreach ($search as $row)
-				array_push($versionsToDelete, array('RecordID' => $row['RecordID'], 'Version' => $row['Version']));
-		}
-
-		$delete_old_page_types = Config::inst()->get('VersionTruncator', 'delete_old_page_types');
-
-		if ($delete_old_page_types) {
-			$search = DB::query('SELECT "RecordID", "Version" FROM "SiteTree_versions"
-				 WHERE "RecordID" = ' . $ID  . ' AND "ClassName" != \'' . $className . '\'');
-			foreach ($search as $row)
-				array_push($versionsToDelete, array('RecordID' => $row['RecordID'], 'Version' => $row['Version']));
 		}
 
 		/* If versions to delete, start deleting */
 		if (count($versionsToDelete) > 0) {
+
+			/* get tablelist array to make sure $subClass_versions tables exist */
+			$tableList = DB::tableList();
+
 			$affected_tables = array();
-			foreach ($subClasses as $subclass) {
-				$versionsTable = $subclass . '_versions';
-				foreach ($versionsToDelete as $d) {
-					DB::query('DELETE FROM "' . $versionsTable . '"' .
-						' WHERE "RecordID" = ' . $d['RecordID'] .
-						' AND "Version" = ' . $d['Version']);
-					if (DB::affectedRows() == 1)
-						array_push($affected_tables, $versionsTable);
+
+			foreach ($versionsToDelete as $d) {
+				$subClasses = ClassInfo::dataClassesFor($d['ClassName']);
+				foreach ($subClasses as $subClass) {
+					if (in_array($subClass . '_versions', $tableList)) {
+						DB::query('DELETE FROM "' . $subClass . '_versions" WHERE
+							"RecordID" = ' . $d['RecordID'] . ' AND "Version" = ' . $d['Version']);
+						/* add table to list of accected_tables */
+						if (!in_array($subClass . '_versions', $affected_tables)) {
+							array_push($affected_tables, $subClass . '_versions');
+						}
+					}
 				}
+
 			}
 
-			$this->vacuumTables($affected_tables);
+			VersionTruncator::vacuumTables($affected_tables);
 		}
 
+		return count($versionsToDelete);
 	}
 
-	/*
-	 * Optimize the tables that are affected
-	 * @param Array
-	 * @return null
-	 */
-	protected function vacuumTables($raw_tables) {
+
+	/**
+	* Optimize the tables that are affected
+	* @param Array
+	* @return null
+	*/
+	public static function vacuumTables($raw_tables) {
 
 		$vacuum_tables = Config::inst()->get('VersionTruncator', 'vacuum_tables');
 
@@ -114,30 +151,7 @@ class VersionTruncator extends SiteTreeExtension {
 				DB::query('VACUUM');
 			}
 		}
-	}
 
-
-	/*
-	 * Warnings for older configs
-	 */
-	public static function set_version_limit($v) {
-		Deprecation::notice('3.0', 'VersionTruncator::set_version_limit() is deprecated.');
-		Config::inst()->update('VersionTruncator', 'version_limit', $v);
-	}
-
-	public static function set_draft_limit($v) {
-		Deprecation::notice('3.0', 'VersionTruncator::set_draft_limit() is deprecated.');
-		Config::inst()->update('VersionTruncator', 'draft_limit', $v);
-	}
-
-	public static function set_vacuum_tables($v) {
-		Deprecation::notice('3.0', 'VersionTruncator::set_vacuum_tables() is deprecated.');
-		Config::inst()->update('VersionTruncator', 'vacuum_tables', $v);
-	}
-
-	public static function set_delete_old_page_types($v) {
-		Deprecation::notice('3.0', 'VersionTruncator::set_delete_old_page_types() is deprecated.');
-		Config::inst()->update('VersionTruncator', 'delete_old_page_types', $v);
 	}
 
 }

@@ -6,4 +6,4 @@ After: 'framework/*','cms/*'
 
 SiteTree:
   extensions:
-    - VersionTruncator
+    - VersionTruncatorExt

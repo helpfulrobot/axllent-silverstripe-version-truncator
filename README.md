@@ -23,6 +23,6 @@ and add/edit the following values:
 VersionTruncator:
   version_limit: 10
   draft_limit: 5
-  delete_old_page_types: false
+  delete_old_pages: true
   vacuum_tables: false
 ```
