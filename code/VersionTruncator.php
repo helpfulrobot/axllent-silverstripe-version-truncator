@@ -19,7 +19,7 @@ class VersionTruncator {
 	private static $draft_limit = 5;
 
 	// Preserve old versions if they have an different URLSegment / ParentID
-	private static $preserve_redirects = false;
+	private static $preserve_redirects = true;
 
 	// VACUUM tables/database after deletions
 	private static $vacuum_tables = false;

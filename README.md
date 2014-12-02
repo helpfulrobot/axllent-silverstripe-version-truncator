@@ -9,6 +9,7 @@ It works for any page extending the SiteTree model, and includes all child model
 * Delete all but the last XX **published** versions of a page (default 10)
 * Delete all but the last XX **draft** versions of a page (default 5)
 * Delete all **redundant** versions of a page when switching Page Type (default false)
+* Preserves old page versions with different $URLSegment and/or $ParentID (default true)
 * Optimize tables / database after purging (default false).
 Supports MySQL, PostgreSQL & SQLite databases.
 
